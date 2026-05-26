@@ -1,6 +1,7 @@
 name: Build, Test and Release DEB
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
     tags:
@@ -14,28 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Архитектуры для сборки
-        arch: [amd64, arm64, armhf]
-        # Тип DEB-пакета (можно расширить)
+        arch: [amd64]  # пока только amd64, ARM добавим позже
         deb_type: [standard, debug, minimal]
-        exclude:
-          # Например, не собираем debug для armhf
-          - arch: armhf
-            deb_type: debug
-          # minimal только для amd64
-          - arch: arm64
-            deb_type: minimal
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-
-    - name: Set up cross-compilation for ARM
-      if: matrix.arch != 'amd64'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu  # for arm64
-        # или для armhf:
-        # sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
     - name: Install dependencies
       run: |
@@ -44,69 +28,48 @@ jobs:
 
     - name: Configure CMake for ${{ matrix.arch }} (${{ matrix.deb_type }})
       run: |
-        mkdir -p build-${{ matrix.arch }}-${{ matrix.deb_type }}
-        cd build-${{ matrix.arch }}-${{ matrix.deb_type }}
+        mkdir -p build-${{ matrix.deb_type }}
+        cd build-${{ matrix.deb_type }}
         
-        # Настройки для кросс-компиляции
-        if [ "${{ matrix.arch }}" = "arm64" ]; then
-          CMAKE_OPTS="-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++"
-        elif [ "${{ matrix.arch }}" = "armhf" ]; then
-          CMAKE_OPTS="-DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++"
-        else
-          CMAKE_OPTS=""
-        fi
-        
-        # Настройки для типа DEB-пакета
         if [ "${{ matrix.deb_type }}" = "debug" ]; then
           BUILD_TYPE="Debug"
-          CPACK_GENERATOR="DEB"
         elif [ "${{ matrix.deb_type }}" = "minimal" ]; then
           BUILD_TYPE="Release"
-          CPACK_GENERATOR="DEB"
-          # Флаги для минимальной сборки
-          CMAKE_OPTS="$CMAKE_OPTS -DMINIMAL_BUILD=ON"
         else
           BUILD_TYPE="Release"
-          CPACK_GENERATOR="DEB"
         fi
         
-        cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCPACK_GENERATOR=$CPACK_GENERATOR $CMAKE_OPTS
+        cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE
 
-    - name: Build project for ${{ matrix.arch }} (${{ matrix.deb_type }})
+    - name: Build project for ${{ matrix.deb_type }}
       run: |
-        cd build-${{ matrix.arch }}-${{ matrix.deb_type }}
+        cd build-${{ matrix.deb_type }}
         cmake --build . -- -j$(nproc)
 
-    - name: Run tests for ${{ matrix.arch }} (${{ matrix.deb_type }})
-      if: matrix.deb_type != 'minimal'  # minimal сборку не тестируем
+    - name: Run tests for ${{ matrix.deb_type }}
+      if: matrix.deb_type != 'minimal'
       run: |
-        cd build-${{ matrix.arch }}-${{ matrix.deb_type }}
+        cd build-${{ matrix.deb_type }}
         ctest --output-on-failure
-        cd ..
 
-    - name: Package DEB with CPack for ${{ matrix.arch }} (${{ matrix.deb_type }})
+    - name: Package DEB with CPack for ${{ matrix.deb_type }}
       run: |
-        cd build-${{ matrix.arch }}-${{ matrix.deb_type }}
+        cd build-${{ matrix.deb_type }}
         cpack -G DEB
-        # Переименовываем пакет с указанием архитектуры и типа
         for deb in *.deb; do
-          mv "$deb" "${deb%.deb}-${{ matrix.arch }}-${{ matrix.deb_type }}.deb"
+          mv "$deb" "${deb%.deb}-${{ matrix.deb_type }}.deb"
         done
-        cd ..
 
-    - name: Upload DEB artifacts for ${{ matrix.arch }} (${{ matrix.deb_type }})
+    - name: Upload DEB artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: deb-package-${{ matrix.arch }}-${{ matrix.deb_type }}
-        path: build-${{ matrix.arch }}-${{ matrix.deb_type }}/*.deb
+        name: deb-package-${{ matrix.deb_type }}
+        path: build-${{ matrix.deb_type }}/*.deb
 
     - name: Create Release and upload assets
       if: startsWith(github.ref, 'refs/tags/v')
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          build-amd64-*/rk2_final*.deb
-          build-arm64-*/rk2_final*.deb
-          build-armhf-*/rk2_final*.deb
+        files: build-*/*.deb
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
